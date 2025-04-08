@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Synthetic Indices Trading Bot</title>
+  <!-- Add the manifest link -->
+  <link rel="manifest" href="/manifest.json">
+  <!-- Theme color for the PWA -->
+  <meta name="theme-color" content="#00bcd4">
+  <!-- Add iOS support -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="/icons/icon-192x192.png">
+  <style>
+    body {
+      font-family: 'Arial', sans-serif;
+      background: #121212;
+      color: #f4f4f4;
+      padding: 20px;
+      margin: 0;
+    }
+    .container {
+      max-width: 1200px;
+      margin: auto;
+      padding: 20px;
+      background: #1e1e1e;
+      border-radius: 10px;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+    }
+    h2 {
+      color: #00bcd4;
+      text-align: center;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+    .stats div {
+      background: #2a2a2a;
+      padding: 15px;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .stats div span {
+      font-size: 24px;
+      font-weight: bold;
+      display: block;
+      margin-top: 5px;
+    }
+    #winCount { color: #4caf50; }
+    #lossCount { color: #f44336; }
+    #winRate { color: #00bcd4; }
+    #accountBalance { color: #ffc107; }
+    .log {
+      background: #333;
+      padding: 15px;
+      border-radius: 5px;
+      height: 400px;
+      overflow-y: auto;
+      font-family: monospace;
+      margin-top: 20px;
+    }
+    .log p {
+      margin: 5px 0;
+      padding: 5px;
+      border-bottom: 1px solid #444;
+    }
+    .log .win { color: #4caf50; }
+    .log .loss { color: #f44336; }
+    .log .info { color: #00bcd4; }
+    button {
+      background: #00bcd4;
+      color: white;
+      border: none;
+      padding: 12px 20px;
+      border-radius: 5px;
+      cursor: pointer;
+      margin: 10px;
+    }
+    button:hover { opacity: 0.9; }
+    #stopBtn { background: #f44336; }
+    input {
+      width: calc(100% - 20px);
+      padding: 10px;
+      margin: 10px;
+      background: #2a2a2a;
+      color: #fff;
+      border: 1px solid #444;
+      border-radius: 5px;
+    }
+    .market-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 15px;
+      margin: 15px 0;
+    }
+    .market-card {
+      background: #2a2a2a;
+      padding: 15px;
+      border-radius: 5px;
+      position: relative;
+    }
+    .signal-indicator {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+    .signal-strong { background-color: #4caf50; }
+    .signal-moderate { background-color: #ff9800; }
+    .signal-weak { background-color: #f44336; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>Synthetic Indices Trading Bot</h2>
+    <div class="stats">
+      <div>Wins: <span id="wins">0</span></div>
+      <div>Losses: <span id="losses">0</span></div>
+      <div>Win Rate: <span id="winRate">0.00%</span></div>
+      <div>Balance: <span id="balance">$0.00</span></div>
+      <div>Stake: <span id="stake">$0.00</span></div>
+      <div>Faux Win Rate: <span id="fauxWinRate">0.00%</span></div>
+    </div>
+    <div>
+      <input id="apiKey" type="text" placeholder="Enter your API Key" />
+      <input id="initialStake" type="number" placeholder="Initial Stake Amount" value="1" />
+      <button id="startBtn">Start Trading</button>
+      <button id="stopBtn">Stop Trading</button>
+    </div>
+    <div id="marketsContainer" class="market-stats"></div>
+    <div class="log" id="log"></div>
+  </div>
+  <script>
+    class TechnicalAnalysis {
+      constructor() {
+        this.prices = [];
+        this.highs = [];
+        this.lows = [];
+        this.supportLevels = [];
+        this.resistanceLevels = [];
+      }
+
+      updateData(price) {
+        this.prices.push(price);
+        if (this.prices.length > 100) this.prices.shift();
+        const period = 20;
+        if (this.prices.length >= period) {
+          const slice = this.prices.slice(-period);
+          this.highs.push(Math.max(...slice));
+          this.lows.push(Math.min(...slice));
+          if (this.highs.length > period) this.highs.shift();
+          if (this.lows.length > period) this.lows.shift();
+          this.updateSupportResistance();
+        }
+      }
+
+      calculateRSI(period = 14) {
+        if (this.prices.length < period + 1) return 50;
+        let gains = 0, losses = 0;
+        for (let i = 1; i <= period; i++) {
+          const diff = this.prices[this.prices.length - i] - this.prices[this.prices.length - i - 1];
+          if (diff >= 0) gains += diff;
+          else losses -= diff;
+        }
+        const avgGain = gains / period, avgLoss = losses / period;
+        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+        return 100 - (100 / (1 + rs));
+      }
+
+      calculateBollingerBands(period = 20, stdDev = 2) {
+        if (this.prices.length < period) return { upper: 0, middle: 0, lower: 0 };
+        const slice = this.prices.slice(-period);
+        const sma = slice.reduce((a, b) => a + b) / period;
+        const variance = slice.reduce((sum, price) => sum + Math.pow(price - sma, 2), 0) / period;
+        const standardDeviation = Math.sqrt(variance);
+        return {
+          upper: sma + (stdDev * standardDeviation),
+          middle: sma,
+          lower: sma - (stdDev * standardDeviation)
+        };
+      }
+
+      calculateMA(period) {
+        if (this.prices.length < period) return 0;
+        return this.prices.slice(-period).reduce((a, b) => a + b) / period;
+      }
+
+      updateSupportResistance() {
+        const period = 10;
+        if (this.prices.length < period * 2) return;
+        const recentPrices = this.prices.slice(-period * 2);
+        const potentialSupport = [], potentialResistance = [];
+        for (let i = period; i < recentPrices.length - period; i++) {
+          const current = recentPrices[i];
+          const leftSlice = recentPrices.slice(i - period, i);
+          const rightSlice = recentPrices.slice(i + 1, i + period + 1);
+          if (current <= Math.min(...leftSlice) && current <= Math.min(...rightSlice)) {
+            potentialSupport.push(current);
+          }
+          if (current >= Math.max(...leftSlice) && current >= Math.max(...rightSlice)) {
+            potentialResistance.push(current);
+          }
+        }
+        this.supportLevels = potentialSupport;
+        this.resistanceLevels = potentialResistance;
+      }
+
+      analyzeMarket() {
+        if (this.prices.length < 50) return null;
+        const currentPrice = this.prices[this.prices.length - 1];
+        const signals = [];
+        let totalWeight = 0;
+
+        // Trend Analysis
+        const trend = this.calculateBasicTrend();
+        if (trend > 0) signals.push({ type: 'CALL', weight: 2 });
+        if (trend < 0) signals.push({ type: 'PUT', weight: 2 });
+        totalWeight += 2;
+
+        // RSI Analysis
+        const rsi = this.calculateRSI();
+        if (rsi < 30) signals.push({ type: 'CALL', weight: 2 });
+        if (rsi > 70) signals.push({ type: 'PUT', weight: 2 });
+        totalWeight += 2;
+
+        // Moving Average Analysis
+        const ma10 = this.calculateMA(10), ma20 = this.calculateMA(20);
+        if (ma10 > ma20) signals.push({ type: 'CALL', weight: 2 });
+        if (ma10 < ma20) signals.push({ type: 'PUT', weight: 2 });
+        totalWeight += 2;
+
+        // Calculate weighted consensus
+        const callWeight = signals.filter(s => s.type === 'CALL').reduce((sum, s) => sum + s.weight, 0);
+        const putWeight = signals.filter(s => s.type === 'PUT').reduce((sum, s) => sum + s.weight, 0);
+        if (callWeight / totalWeight > 0.6) return 'CALL';
+        if (putWeight / totalWeight > 0.6) return 'PUT';
+        return 'NEUTRAL';
+      }
+
+      calculateMACD() {
+        const ema12 = this.calculateEMA(12), ema26 = this.calculateEMA(26);
+        const macd = ema12 - ema26;
+        const signal = this.calculateEMA(9, [macd]);
+        const histogram = macd - signal;
+        return { macd, signal, histogram };
+      }
+
+      calculateEMA(period, data = this.prices) {
+        const alpha = 2 / (period + 1);
+        let ema = data[0];
+        for (let i = 1; i < data.length; i++) {
+          ema = alpha * data[i] + (1 - alpha) * ema;
+        }
+        return ema;
+      }
+
+      calculateBasicTrend() {
+        const period = 10;
+        if (this.prices.length < period) return 0;
+        const recentPrices = this.prices.slice(-period);
+        const firstPrice = recentPrices[0], lastPrice = recentPrices[recentPrices.length - 1];
+        return lastPrice - firstPrice;
+      }
+    }
+
+    class SyntheticIndicesBot {
+      constructor() {
+        this.ws = null;
+        this.markets = ["R_10", "R_25", "R_50", "R_75", "R_100"];
+        this.analysis = {};
+        this.markets.forEach(market => {
+          this.analysis[market] = new TechnicalAnalysis();
+        });
+        this.winCount = 0;
+        this.lossCount = 0;
+        this.accountBalance = 0;
+        this.currentStake = 0;
+        this.initialStake = 0;
+        this.isRunning = false;
+        this.fauxTrades = new Map();
+        this.lastTradeTime = new Map();
+        this.lastFauxTime = new Map();
+        this.markets.forEach(market => {
+          this.lastTradeTime.set(market, 0);
+          this.lastFauxTime.set(market, 0);
+          this.fauxTrades.set(market, []);
+        });
+        this.tradeHistory = new Map();
+        this.marketScores = new Map();
+        this.consecutiveLosses = 0;
+        this.lastTradeSession = new Map();
+        this.analysisWindow = 30000;
+        this.maxStakePercentage = 0.35;
+        this.totalTrades = 0;
+      }
+
+      log(message, type = 'info') {
+        const logDiv = document.getElementById("log");
+        if (!logDiv) {
+          console.error("Log div not found");
+          return;
+        }
+        try {
+          const now = new Date().toLocaleTimeString();
+          const logEntry = document.createElement('p');
+          logEntry.className = type || 'info';
+          logEntry.textContent = `${now} - ${message}`;
+          logDiv.insertBefore(logEntry, logDiv.firstChild);
+          while (logDiv.children.length > 100) {
+            logDiv.removeChild(logDiv.lastChild);
+          }
+        } catch (error) {
+          console.error("Error adding log entry:", error);
+        }
+      }
+
+      updateStats() {
+        try {
+          const winRate = this.totalTrades > 0 ? ((this.winCount / this.totalTrades) * 100).toFixed(2) : "0.00";
+          document.getElementById("wins").textContent = this.winCount;
+          document.getElementById("losses").textContent = this.lossCount;
+          document.getElementById("winRate").textContent = `${winRate}%`;
+          document.getElementById("balance").textContent = `$${this.accountBalance.toFixed(2)}`;
+          document.getElementById("stake").textContent = `$${this.currentStake.toFixed(2)}`;
+          const fauxWinRate = this.calculateOverallFauxWinRate();
+          document.getElementById("fauxWinRate").textContent = `${fauxWinRate.toFixed(2)}%`;
+        } catch (error) {
+          this.log(`Error updating stats: ${error.message}`, 'loss');
+        }
+      }
+
+      startBot() {
+        if (this.isRunning) return;
+        const apiKey = document.getElementById("apiKey").value;
+        if (!apiKey) {
+          this.log("Please enter an API key", "loss");
+          return;
+        }
+        this.initialStake = parseFloat(document.getElementById("initialStake").value) || 1;
+        if (this.initialStake <= 0) {
+          this.log("Initial stake must be greater than 0", "loss");
+          return;
+        }
+        this.currentStake = this.initialStake;
+        this.isRunning = true;
+        try {
+          this.ws = new WebSocket("wss://ws.binaryws.com/websockets/v3?app_id=1089");
+          this.ws.onopen = () => {
+            this.log("Connected to Deriv");
+            this.ws.send(JSON.stringify({ authorize: apiKey }));
+          };
+          this.ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.error) {
+              this.log(`Error: ${data.error.message}`, 'loss');
+              this.stopBot();
+              return;
+            }
+            switch (data.msg_type) {
+              case "authorize":
+                this.log("Authorization successful");
+                this.accountBalance = data.authorize.balance;
+                this.updateStats();
+                this.markets.forEach(market => {
+                  this.ws.send(JSON.stringify({
+                    ticks: market,
+                    subscribe: 1
+                  }));
+                });
+                break;
+              case "tick":
+                this.processTick(data.tick);
+                break;
+              case "proposal":
+                this.handleProposal(data);
+                break;
+              case "buy":
+                if (data.buy) {
+                  this.log(`Trade executed: ${data.buy.longcode}`);
+                  this.monitorTrade(data.buy.contract_id, data.buy.buy_price);
+                }
+                break;
+              case "proposal_open_contract":
+                if (data.proposal_open_contract.is_sold) {
+                  const contractId = data.proposal_open_contract.contract_id;
+                  const profit = data.proposal_open_contract.profit;
+                  const stake = data.proposal_open_contract.buy_price;
+                  this.handleTradeOutcome(contractId, profit > 0, stake);
+                }
+                break;
+            }
+          };
+          this.ws.onclose = () => {
+            this.log("Connection closed");
+            this.isRunning = false;
+          };
+        } catch (error) {
+          this.log(`WebSocket connection error: ${error.message}`, "loss");
+          this.isRunning = false;
+        }
+      }
+
+      stopBot() {
+        if (this.ws) {
+          this.ws.close();
+        }
+        this.isRunning = false;
+        this.log("Bot stopped");
+      }
+
+      processTick(tick) {
+        const market = tick.symbol;
+        const price = tick.quote;
+        const now = Date.now();
+        this.analysis[market].updateData(price);
+        this.log(`${market} tick: ${price}`, 'info');
+        if (!this.lastTradeTime.get(market)) {
+          this.lastTradeTime.set(market, now - this.analysisWindow - 1000);
+        }
+        if (now - this.lastFauxTime.get(market) >= 2000) {
+          const signal = this.analysis[market].analyzeMarket();
+          this.runFauxTrades(market, signal);
+          this.lastFauxTime.set(market, now);
+        }
+        if (now - this.lastTradeTime.get(market) >= this.analysisWindow) {
+          this.log(`Analyzing ${market} for potential trade...`);
+          this.executeOptimalTrades();
+          this.lastTradeTime.set(market, now);
+        }
+      }
+
+      runFauxTrades(market, signal) {
+        const trades = this.fauxTrades.get(market) || [];
+        const prices = this.analysis[market].prices;
+        if (prices.length < 2) return;
+        const currentPrice = prices[prices.length - 1];
+        const previousPrice = prices[prices.length - 2];
+        const priceMove = currentPrice - previousPrice;
+        if (!signal || signal === 'NEUTRAL') {
+          signal = this.analysis[market].analyzeMarket();
+        }
+        if (signal && signal !== 'NEUTRAL') {
+          const outcome = (signal === 'CALL' && priceMove > 0) || (signal === 'PUT' && priceMove < 0) ? 'win' : 'loss';
+          trades.push(outcome);
+          if (trades.length > 5) trades.shift();
+          const fauxWinRate = this.calculateFauxWinRate(market);
+          document.getElementById("fauxWinRate").textContent = `${fauxWinRate.toFixed(2)}%`;
+          this.log(`Faux trade on ${market}: ${outcome.toUpperCase()} (${signal}) - Price move: ${priceMove.toFixed(5)}`, outcome);
+        } else {
+          this.log(`Waiting for valid signal on ${market} - Current move: ${priceMove.toFixed(5)}`);
+        }
+      }
+
+      executeOptimalTrades() {
+        try {
+          const marketScores = new Map();
+          let executedTrades = 0;
+          const maxTradesPerCycle = 3;
+          for (const market of this.markets) {
+            try {
+              const score = this.calculateMarketScore(market);
+              marketScores.set(market, score);
+              this.log(`${market} final score: ${score.toFixed(2)}`);
+            } catch (error) {
+              this.log(`Error processing ${market}: ${error.message}`, 'loss');
+            }
+          }
+          const sortedMarkets = Array.from(marketScores.entries())
+            .sort((a, b) => b[1] - a[1]);
+          this.log(`Top markets selected: ${sortedMarkets.slice(0, 3).map(([m, s]) => `${m}(${s.toFixed(2)})`).join(', ')}`);
+          for (const [market, score] of sortedMarkets) {
+            if (executedTrades >= maxTradesPerCycle) break;
+            try {
+              const analysis = this.analysis[market];
+              const signal = analysis.analyzeMarket();
+              const fauxTrades = this.fauxTrades.get(market) || [];
+              const recentFauxTrades = fauxTrades.slice(-5);
+              const fauxWinRate = recentFauxTrades.length > 0 ?
+                (recentFauxTrades.filter(t => t === 'win').length / recentFauxTrades.length) * 100 : 0;
+              const shouldTrade = signal &&
+                                signal !== 'NEUTRAL' &&
+                                (fauxWinRate >= 60 || score >= 0.65);
+              if (shouldTrade) {
+                const maxStake = this.accountBalance * this.maxStakePercentage;
+                const optimalStake = Math.min(this.currentStake, maxStake);
+                this.log(`Executing real trade for ${market} - Signal: ${signal}, Score: ${score.toFixed(2)}, Faux Win Rate: ${fauxWinRate.toFixed(2)}%`);
+                setTimeout(() => {
+                  this.requestProposal(market, signal);
+                }, executedTrades * 1000);
+                executedTrades++;
+              } else {
+                this.log(`No trade executed for ${market} - Signal: ${signal}, Score: ${score.toFixed(2)}, Faux Win Rate: ${fauxWinRate.toFixed(2)}%`);
+              }
+              const macd = analysis.calculateMACD();
+              const signalStrength = this.calculateSignalStrength(market, signal);
+              this.updateMarketDisplay(market, { price: analysis.prices[analysis.prices.length - 1], signal, fauxWinRate, macd, signalStrength });
+            } catch (error) {
+              this.log(`Error executing trade for ${market}: ${error.message}`, 'loss');
+            }
+          }
+        } catch (error) {
+          this.log(`Error in executeOptimalTrades: ${error.message}`, 'loss');
+        }
+      }
+
+      updateMarketDisplay(market, data) {
+        const container = document.getElementById('marketsContainer');
+        let marketCard = document.getElementById(`market-${market}`);
+        if (!marketCard) {
+          marketCard = document.createElement('div');
+          marketCard.id = `market-${market}`;
+          marketCard.className = 'market-card';
+          container.appendChild(marketCard);
+        }
+        marketCard.innerHTML = `
+          <h3>${market}</h3>
+          <p>Price: $${data.price.toFixed(5)}</p>
+          <p>Signal: ${data.signal || 'NEUTRAL'}</p>
+          <p>Faux Win Rate: ${data.fauxWinRate.toFixed(2)}%</p>
+          <p>MACD: ${data.macd?.histogram.toFixed(4)}</p>
+        `;
+        const indicator = document.createElement('div');
+        indicator.className = 'signal-indicator';
+        if (data.signalStrength === 'strong') {
+          indicator.classList.add('signal-strong');
+        } else if (data.signalStrength === 'moderate') {
+          indicator.classList.add('signal-moderate');
+        } else {
+          indicator.classList.add('signal-weak');
+        }
+        marketCard.appendChild(indicator);
+      }
+
+      calculateSignalStrength(market, signal) {
+        const analysis = this.analysis[market];
+        const rsi = analysis.calculateRSI();
+        const macd = analysis.calculateMACD();
+        const bb = analysis.calculateBollingerBands();
+        const currentPrice = analysis.prices[analysis.prices.length - 1];
+
+        // Determine signal strength based on indicators
+        const conditionsMet = [
+          signal && signal !== 'NEUTRAL',
+          rsi > 30 && rsi < 70,
+          macd.histogram > 0,
+          currentPrice > bb.middle
+        ].filter(Boolean).length;
+
+        if (conditionsMet >= 3) return 'strong';
+        if (conditionsMet === 2) return 'moderate';
+        return 'weak';
+      }
+
+      calculateFauxWinRate(market) {
+        const trades = this.fauxTrades.get(market) || [];
+        if (trades.length === 0) return 0;
+        const wins = trades.filter(t => t === 'win').length;
+        return (wins / trades.length) * 100;
+      }
+
+      calculateOverallFauxWinRate() {
+        try {
+          let totalWins = 0, totalTrades = 0;
+          for (const market of this.markets) {
+            const trades = this.fauxTrades.get(market) || [];
+            totalWins += trades.filter(t => t === 'win').length;
+            totalTrades += trades.length;
+          }
+          return totalTrades > 0 ? (totalWins / totalTrades) * 100 : 0;
+        } catch (error) {
+          this.log(`Error calculating faux win rate: ${error.message}`, 'loss');
+          return 0;
+        }
+      }
+
+      handleProposal(data) {
+        if (data.proposal) {
+          try {
+            const buyRequest = {
+              buy: data.proposal.id,
+              price: data.proposal.ask_price
+            };
+            this.ws.send(JSON.stringify(buyRequest));
+            this.log(`Buying contract: ${data.proposal.longcode}`);
+          } catch (error) {
+            this.log(`Error processing proposal: ${error.message}`, 'loss');
+          }
+        }
+      }
+
+      handleTradeOutcome(contractId, isWin, stake) {
+        try {
+          this.totalTrades++;
+          if (isWin) {
+            this.winCount++;
+            this.accountBalance += stake * 0.95;
+            this.log(`Trade ${contractId} WON. Profit: $${(stake * 0.95).toFixed(2)}`, 'win');
+          } else {
+            this.lossCount++;
+            this.accountBalance -= stake;
+            this.log(`Trade ${contractId} LOST. Loss: $${stake.toFixed(2)}`, 'loss');
+          }
+          this.updateStats();
+        } catch (error) {
+          this.log(`Error in handleTradeOutcome: ${error.message}`, 'loss');
+        }
+      }
+    }
+
+    const bot = new SyntheticIndicesBot();
+    document.getElementById("startBtn").addEventListener("click", () => {
+      if (!bot.isRunning) {
+        bot.startBot();
+      }
+    });
+    document.getElementById("stopBtn").addEventListener("click", () => {
+      bot.stopBot();
+    });
+  </script>
+</body>
+</html>
