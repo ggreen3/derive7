@@ -297,11 +297,6 @@
         this.lastTradeSession = new Map();
         this.analysisWindow = 30000;
         this.maxStakePercentage = 0.35;
-        this.marketPerformance = new Map();
-        this.patternMemory = new Map();
-        this.learningRate = 0.15;
-        this.confidenceThreshold = 0.65;
-        this.pricePatternLength = 10;
         this.totalTrades = 0;
       }
 
@@ -492,10 +487,13 @@
               const recentFauxTrades = fauxTrades.slice(-5);
               const fauxWinRate = recentFauxTrades.length > 0 ?
                 (recentFauxTrades.filter(t => t === 'win').length / recentFauxTrades.length) * 100 : 0;
+
+              // Ensure `this.hasEnoughData` is called with the correct context
               const shouldTrade = signal &&
-                                signal !== 'NEUTRAL' &&
-                                (fauxWinRate >= 60 || score >= 0.65) &&
-                                this.hasEnoughData(market);
+                                  signal !== 'NEUTRAL' &&
+                                  (fauxWinRate >= 60 || score >= 0.65) &&
+                                  this.hasEnoughData(market);
+
               if (shouldTrade) {
                 const maxStake = this.accountBalance * this.maxStakePercentage;
                 const optimalStake = Math.min(this.currentStake, maxStake);
@@ -507,9 +505,6 @@
               } else {
                 this.log(`No trade executed for ${market} - Signal: ${signal}, Score: ${score.toFixed(2)}, Faux Win Rate: ${fauxWinRate.toFixed(2)}%`);
               }
-              const macd = analysis.calculateMACD();
-              const signalStrength = this.calculateSignalStrength(market, signal);
-              this.updateMarketDisplay(market, { price: analysis.prices[analysis.prices.length - 1], signal, fauxWinRate, macd, signalStrength });
             } catch (error) {
               this.log(`Error executing trade for ${market}: ${error.message}`, 'loss');
             }
@@ -519,52 +514,44 @@
         }
       }
 
-      updateMarketDisplay(market, data) {
-        const container = document.getElementById('marketsContainer');
-        let marketCard = document.getElementById(`market-${market}`);
-        if (!marketCard) {
-          marketCard = document.createElement('div');
-          marketCard.id = `market-${market}`;
-          marketCard.className = 'market-card';
-          container.appendChild(marketCard);
-        }
-        marketCard.innerHTML = `
-          <h3>${market}</h3>
-          <p>Price: $${data.price.toFixed(5)}</p>
-          <p>Signal: ${data.signal || 'NEUTRAL'}</p>
-          <p>Faux Win Rate: ${data.fauxWinRate.toFixed(2)}%</p>
-          <p>MACD: ${data.macd?.histogram.toFixed(4)}</p>
-        `;
-        const indicator = document.createElement('div');
-        indicator.className = 'signal-indicator';
-        if (data.signalStrength === 'strong') {
-          indicator.classList.add('signal-strong');
-        } else if (data.signalStrength === 'moderate') {
-          indicator.classList.add('signal-moderate');
-        } else {
-          indicator.classList.add('signal-weak');
-        }
-        marketCard.appendChild(indicator);
+      hasEnoughData(market) {
+        const analysis = this.analysis[market];
+        const minDataPoints = Math.max(50, 10 * 2); // At least 50 data points or twice the pattern length
+        return analysis && analysis.prices.length >= minDataPoints;
       }
 
-      calculateSignalStrength(market, signal) {
-        const analysis = this.analysis[market];
-        const rsi = analysis.calculateRSI();
-        const macd = analysis.calculateMACD();
-        const bb = analysis.calculateBollingerBands();
-        const currentPrice = analysis.prices[analysis.prices.length - 1];
+      handleTradeOutcome(contractId, isWin, stake) {
+        try {
+          this.totalTrades++;
+          if (isWin) {
+            this.winCount++;
+            this.accountBalance += stake * 0.95; // 95% profit
+          } else {
+            this.lossCount++;
+            this.accountBalance -= stake; // Deduct stake
+          }
+          this.updateStats(); // Update the UI with the latest stats
+          this.log(`Trade ${contractId} ${isWin ? 'WON' : 'LOST'}. Balance: $${this.accountBalance.toFixed(2)}`, isWin ? 'win' : 'loss');
+        } catch (error) {
+          this.log(`Error handling trade outcome: ${error.message}`, 'loss');
+        }
+      }
 
-        // Determine signal strength based on indicators
-        const conditionsMet = [
-          signal && signal !== 'NEUTRAL',
-          rsi > 30 && rsi < 70,
-          macd.histogram > 0,
-          currentPrice > bb.middle
-        ].filter(Boolean).length;
-
-        if (conditionsMet >= 3) return 'strong';
-        if (conditionsMet === 2) return 'moderate';
-        return 'weak';
+      requestProposal(market, action) {
+        if (!this.isRunning) return;
+        const stake = Math.min(this.currentStake, this.accountBalance * this.maxStakePercentage);
+        const proposal = {
+          proposal: 1,
+          amount: stake,
+          basis: "stake",
+          contract_type: action,
+          currency: "USD",
+          duration: 1,
+          duration_unit: "t",
+          symbol: market
+        };
+        this.log(`Sending ${action} proposal for ${market} with stake $${stake}`);
+        this.ws.send(JSON.stringify(proposal));
       }
 
       calculateFauxWinRate(market) {
@@ -572,34 +559,6 @@
         if (trades.length === 0) return 0;
         const wins = trades.filter(t => t === 'win').length;
         return (wins / trades.length) * 100;
-      }
-
-      calculateMarketScore(market) {
-        try {
-          const trades = this.tradeHistory.get(market) || [];
-          if (trades.length < 5) return 0.5;
-          const performance = this.marketPerformance.get(market) || { confidence: 0.5 };
-          const analysis = this.analysis[market];
-          const rsi = analysis.calculateRSI();
-          const bb = analysis.calculateBollingerBands();
-          const macd = analysis.calculateMACD();
-          const rsiScore = Math.abs(50 - rsi) / 50;
-          const bbScore = Math.abs((bb.middle - bb.lower) / bb.middle);
-          const macdScore = Math.abs(macd.histogram) / 100;
-          const patternScore = this.matchCurrentPattern(market);
-          const performanceWeight = Math.min(0.4, performance.total / 100);
-          const patternWeight = Math.min(0.3, this.patternMemory.get(market)?.length / 50 || 0);
-          const technicalWeight = 1 - performanceWeight - patternWeight;
-          const technicalScore = (rsiScore + bbScore + macdScore) / 3;
-          const finalScore = (technicalScore * technicalWeight) +
-                            (performance.confidence * performanceWeight) +
-                            (patternScore * patternWeight);
-          this.log(`${market} Score Components - Technical: ${technicalScore.toFixed(2)}, Performance: ${performance.confidence.toFixed(2)}, Pattern: ${patternScore.toFixed(2)}`);
-          return finalScore;
-        } catch (error) {
-          this.log(`Error calculating market score for ${market}: ${error.message}`, 'loss');
-          return 0;
-        }
       }
 
       calculateOverallFauxWinRate() {
@@ -617,36 +576,50 @@
         }
       }
 
-      handleProposal(data) {
-        if (data.proposal) {
-          try {
-            const buyRequest = {
-              buy: data.proposal.id,
-              price: data.proposal.ask_price
-            };
-            this.ws.send(JSON.stringify(buyRequest));
-            this.log(`Buying contract: ${data.proposal.longcode}`);
-          } catch (error) {
-            this.log(`Error processing proposal: ${error.message}`, 'loss');
-          }
+      updateMarketDisplay(market, data) {
+        const container = document.getElementById('marketsContainer');
+        let marketCard = document.getElementById(`market-${market}`);
+        if (!marketCard) {
+          marketCard = document.createElement('div');
+          marketCard.id = `market-${market}`;
+          marketCard.className = 'market-card';
+          container.appendChild(marketCard);
         }
+        marketCard.innerHTML = `
+          <h3>${market}</h3>
+          <p>Price: $${data.price.toFixed(5)}</p>
+          <p>Signal: ${data.signal || 'NEUTRAL'}</p>
+          <p>Faux Win Rate: ${data.fauxWinRate.toFixed(2)}%</p>
+        `;
+        const indicator = document.createElement('div');
+        indicator.className = 'signal-indicator';
+        if (data.signalStrength === 'strong') {
+          indicator.classList.add('signal-strong');
+        } else if (data.signalStrength === 'moderate') {
+          indicator.classList.add('signal-moderate');
+        } else {
+          indicator.classList.add('signal-weak');
+        }
+        marketCard.appendChild(indicator);
       }
 
-      handleTradeOutcome(contractId, isWin, stake) {
+      calculateMarketScore(market) {
         try {
-          this.totalTrades++;
-          if (isWin) {
-            this.winCount++;
-            this.accountBalance += stake * 0.95;
-            this.log(`Trade ${contractId} WON. Profit: $${(stake * 0.95).toFixed(2)}`, 'win');
-          } else {
-            this.lossCount++;
-            this.accountBalance -= stake;
-            this.log(`Trade ${contractId} LOST. Loss: $${stake.toFixed(2)}`, 'loss');
-          }
-          this.updateStats();
+          const trades = this.tradeHistory.get(market) || [];
+          if (trades.length < 5) return 0.5;
+          const performance = this.marketPerformance.get(market) || { confidence: 0.5 };
+          const analysis = this.analysis[market];
+          const rsi = analysis.calculateRSI();
+          const bb = analysis.calculateBollingerBands();
+          const macd = analysis.calculateMACD();
+          const rsiScore = Math.abs(50 - rsi) / 50;
+          const bbScore = Math.abs((bb.middle - bb.lower) / bb.middle);
+          const macdScore = Math.abs(macd.histogram) / 100;
+          const technicalScore = (rsiScore + bbScore + macdScore) / 3;
+          return technicalScore;
         } catch (error) {
-          this.log(`Error in handleTradeOutcome: ${error.message}`, 'loss');
+          this.log(`Error calculating market score for ${market}: ${error.message}`, 'loss');
+          return 0;
         }
       }
     }
